@@ -1,0 +1,12 @@
+[package]
+name = "potts_model"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winapi = { version = "0.3", features = ["winuser", "windef"] }
+eframe = { version = "0.24", features = ["glow"] }
+egui = "0.24"
+egui_plot = "0.24"
+cust = "0.3"
+rand = "0.8"
