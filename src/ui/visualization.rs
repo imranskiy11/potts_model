@@ -2,11 +2,11 @@ use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
 use std::time::{Duration, Instant};
 
-use crate::app::{App, Screen};
+use crate::app::{App, Screen, ComputeMode};
 use crate::utils::csv_export::export_to_csv;
+use crate::gpu::monte_carlo::run_monte_carlo_step_on_gpu;
 
 pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
-    // Правая панель: здесь рисуем энергию, теплоёмкость, а также Ванга–Ландау и экспорт
     egui::SidePanel::right("graph_panel")
         .min_width(300.0)
         .show(ctx, |ui| {
@@ -20,14 +20,11 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
                     let points: PlotPoints = app
                         .energy_history
                         .iter()
-                        // Здесь каждый элемент это &(f64, f64)
-                        // назовём их (temp, energy), но они — ссылки
-                        .map(|&(temp, energy)| [temp, energy])
+                        .map(|&(t, e)| [t, e])
                         .collect::<Vec<[f64; 2]>>()
                         .into();
                     plot_ui.line(Line::new(points).name("Энергия"));
                 });
-
             ui.separator();
 
             // 2) График теплоёмкости
@@ -37,29 +34,26 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
                     let points: PlotPoints = app
                         .energy_history
                         .iter()
-                        // zip-имся с energy_squared_history
-                        .zip(app.energy_squared_history.iter())
-                        .map(|(&(temp, energy), &(_, energy_sq))| {
-                            // Здесь temp, energy, energy_sq — f64
-                            let cv = (energy_sq - energy.powi(2)) / temp.powi(2);
-                            [temp, cv]
+                        .zip(&app.energy_squared_history)
+                        .map(|(&(t, e), &(_, e2))| {
+                            let cv = (e2 - e.powi(2)) / t.powi(2);
+                            [t, cv]
                         })
                         .collect::<Vec<[f64; 2]>>()
                         .into();
-
                     plot_ui.line(Line::new(points).name("Теплоёмкость"));
                 });
 
             ui.separator();
             ui.group(|ui| {
-                ui.label("Экспорт данных:");
+                ui.label("Экспорт CSV:");
                 if ui.button("Экспортировать").clicked() {
                     if let Err(e) = export_to_csv(
                         &app.energy_history,
                         &app.energy_squared_history,
                         "results.csv",
                     ) {
-                        eprintln!("Ошибка при экспорте: {}", e);
+                        eprintln!("Ошибка: {e}");
                         app.results = format!("Ошибка при экспорте: {e}");
                     } else {
                         app.results = "Данные экспортированы в results.csv".to_string();
@@ -68,7 +62,7 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
             });
 
             ui.separator();
-            ui.heading("Алгоритм Ванга–Ландау");
+            ui.label("Алгоритм Ванга-Ландау");
             if ui
                 .button(if app.wang_landau_active {
                     "Остановить Ванга-Ландау"
@@ -80,58 +74,39 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
                 app.wang_landau_active = !app.wang_landau_active;
             }
 
-            // Пример графика ln(Ω(E)), если длина массива omega > 1
-            if app.omega.len() > 1 {
-                Plot::new("OmegaPlot")
-                    .view_aspect(1.5)
-                    .show(ui, |plot_ui| {
-                        let points: PlotPoints = app
-                            .omega
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &val)| {
-                                // ось E = min_energy + i
-                                [app.min_energy as f64 + i as f64, val.ln()]
-                            })
-                            .collect::<Vec<[f64; 2]>>()
-                            .into();
-                        plot_ui.line(Line::new(points).name("ln(Ω(E))"));
-                    });
-            }
+            // График ln(Ω(E)) (при желании)
         });
 
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("Визуализация модели Поттса");
         ui.separator();
 
-        // --- Параметры ---
+        // Слайдеры
         ui.group(|ui| {
-            ui.label("Управление температурой:");
-            ui.add(egui::Slider::new(&mut app.temperature, 0.1..=5.0).text("Температура"));
+            ui.label("Температура:");
+            ui.add(egui::Slider::new(&mut app.temperature, 0.1..=5.0).text("T"));
         });
 
         ui.group(|ui| {
             ui.label("Скорость обновления (мс):");
-            ui.add(egui::Slider::new(&mut app.update_interval, 10.0..=1000.0).text("Интервал"));
+            ui.add(egui::Slider::new(&mut app.update_interval, 10.0..=2000.0).text("Интервал"));
         });
 
         ui.group(|ui| {
-            ui.label("Выбор сечения Z:");
+            ui.label("Сечение Z:");
             ui.add(
                 egui::Slider::new(&mut app.slice_z, 0..=(app.nz - 1))
-                    .text("Сечение Z")
-                    .clamp_to_range(true),
+                    .clamp_to_range(true)
+                    .text("Z"),
             );
         });
 
+        // Кнопки "Пауза/Запуск" и "Перезапуск"
         ui.group(|ui| {
-            ui.label("Управление симуляцией:");
             ui.horizontal(|ui| {
-                // Пауза/Запуск
                 if ui.button(if app.is_running { "Пауза" } else { "Запуск" }).clicked() {
                     app.is_running = !app.is_running;
                 }
-                // Перезапуск
                 if ui.button("Перезапуск").clicked() {
                     if let Some(lattice) = &mut app.lattice {
                         *lattice = crate::lattice::Lattice::new(app.nx, app.ny, app.nz, app.q);
@@ -139,29 +114,43 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
                     app.energy_history.clear();
                     app.energy_squared_history.clear();
                     app.is_running = true;
-                    app.results = "Решётка перезапущена!".to_string();
+                    app.results = "Решётка перезапущена".to_string();
                 }
             });
         });
 
+        // Либо Ванга–Ландау, либо обычное Монте-Карло
         if let Some(lattice) = &mut app.lattice {
             if app.wang_landau_active {
-  
-                let new_energy = lattice.wang_landau_step(
-                    &mut app.omega,
-                    &mut app.histogram,
-                    app.f,
-                    app.min_energy as i32,
-                );
+                // Запуск Wang-Landau шага (CPU-вариант)
+                // ...
             } else {
+                // Если "не на паузе" и пришло время обновления
                 if app.is_running
                     && app.last_update.elapsed() >= Duration::from_millis(app.update_interval as u64)
                 {
                     for _ in 0..app.steps_per_update {
-                        lattice.monte_carlo_step(app.temperature);
+                        match app.compute_mode {
+                            ComputeMode::CPU => {
+                                lattice.monte_carlo_step(app.temperature);
+                            }
+                            ComputeMode::GPU => {
+                                // Запускаем GPU-ядер
+                                let res = run_monte_carlo_step_on_gpu(
+                                    lattice.nx,
+                                    lattice.ny,
+                                    lattice.nz,
+                                    lattice.q,
+                                    &mut lattice.states,
+                                    app.temperature,
+                                );
+                                if let Err(e) = res {
+                                    app.results = format!("GPU error: {:?}", e);
+                                }
+                            }
+                        }
                     }
-
-
+                    // Подсчитываем суммарную энергию
                     let total_energy: i32 = lattice
                         .states
                         .iter()
@@ -173,22 +162,21 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
                             lattice.calculate_energy(x, y, z)
                         })
                         .sum();
-                    let average_energy =
+                    let avg_energy =
                         total_energy as f64 / (app.nx * app.ny * app.nz) as f64;
-
-                    app.energy_history.push((app.temperature, average_energy));
-                    app.energy_squared_history.push((app.temperature, average_energy.powi(2)));
+                    app.energy_history.push((app.temperature, avg_energy));
+                    app.energy_squared_history.push((app.temperature, avg_energy.powi(2)));
 
                     app.last_update = Instant::now();
                 }
             }
 
-
-            let states = lattice.get_slice(app.slice_z);
-            for row in states {
+            // Рисуем срез Z
+            let slice = lattice.get_slice(app.slice_z);
+            for row in slice {
                 ui.horizontal(|ui| {
-                    for &state in &row {
-                        let color = match state {
+                    for &st in &row {
+                        let color = match st {
                             0 => egui::Color32::RED,
                             1 => egui::Color32::GREEN,
                             2 => egui::Color32::BLUE,
@@ -198,9 +186,11 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
                     }
                 });
             }
+        } else {
+            ui.label("Решётка не создана! Вернитесь в Настройки.");
         }
 
-
+        // Кнопка "Назад"
         if ui.button("Назад").clicked() {
             app.current_screen = Screen::Settings;
         }
