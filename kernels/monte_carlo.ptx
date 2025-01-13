@@ -1,0 +1,209 @@
+.version 7.5
+.target sm_70
+.address_size 64
+
+// Входные параметры ядра:
+/// .param .u64 states_ptr
+/// .param .u64 random_ptr
+/// .param .u32 nx
+/// .param .u32 ny
+/// .param .u32 nz
+/// .param .u32 q
+/// .param .f32 temperature
+/// .param .u32 total_size
+
+.entry metropolis_kernel (
+    .param .u64 states_ptr,
+    .param .u64 random_ptr,
+    .param .u32 nx,
+    .param .u32 ny,
+    .param .u32 nz,
+    .param .u32 q,
+    .param .f32 temperature,
+    .param .u32 total_size
+)
+{
+    // регистры
+    .reg .u32 %tid;
+    .reg .u32 %bid;
+    .reg .u32 %bdim;
+    .reg .u32 %gid;  // global idx
+    .reg .u32 %len;
+
+    // загружаем total_size (кол-во элементов states)
+    ld.param.u32 %len, [total_size];
+
+    // threadIdx.x
+    mov.u32 %tid, %threadIdx.x;
+    // blockIdx.x
+    mov.u32 %bid, %blockIdx.x;
+    // blockDim.x
+    mov.u32 %bdim, %blockDim.x;
+
+    // gid = bid * bdim + tid
+    mad.lo.u32 %gid, %bid, %bdim, %tid;
+
+    // если %gid >= total_size, выходим
+    setp.ge.u32 p_done, %gid, %len;
+    @p_done bra DONE;
+
+    //-----------------------------------------------------------------
+    // Загружаем другие параметры
+    .reg .u64 %states_ptr_;
+    .reg .u64 %random_ptr_;
+    ld.param.u64 %states_ptr_, [states_ptr];
+    ld.param.u64 %random_ptr_, [random_ptr];
+
+    .reg .u32 %nx;
+    ld.param.u32 %nx, [nx];
+    .reg .u32 %ny;
+    ld.param.u32 %ny, [ny];
+    .reg .u32 %nz;
+    ld.param.u32 %nz, [nz];
+    .reg .u32 %q;
+    ld.param.u32 %q, [q];
+
+    .reg .f32 %temp;
+    ld.param.f32 %temp, [temperature];
+
+    // Прочитаем states[%gid]
+    .reg .u8  %old_state;
+    .reg .u64 %addr_s;
+    mul.wide.u32 %addr_s, %gid, 1; // 1 байт на u8
+    add.u64 %addr_s, %addr_s, %states_ptr_;
+    ld.global.u8 %old_state, [%addr_s];
+
+    // Прочитаем random_numbers[%gid] => rand
+    .reg .f32 %randf;
+    .reg .u64 %addr_r;
+    mul.wide.u32 %addr_r, %gid, 4; // float 4 байта
+    add.u64 %addr_r, %addr_r, %random_ptr_;
+    ld.global.f32 %randf, [%addr_r];
+
+    //-----------------------------------------------------------------
+    // Вычислим координаты x,y,z
+    // gid = x + nx*(y + ny*z)
+    // Нужно "обратное" преобразование
+    .reg .u32 %z;
+    .reg .u32 %xy;
+    .reg .u32 %y;
+    .reg .u32 %x;
+
+    // z = gid / (nx*ny)
+    mul.lo.u32 %xy, %nx, %ny;
+    div.u32 %z, %gid, %xy;
+    // остаток
+    mul.lo.u32 %xy, %z, %xy;
+    sub.u32 %xy, %gid, %xy;
+    // y = xy / nx
+    div.u32 %y, %xy, %nx;
+    // x = xy % nx
+    rem.u32 %x, %xy, %nx;
+
+    //-----------------------------------------------------------------
+    // Предлагаем новое состояние
+    // new_state = floor(randf * q)
+    .reg .f32 %mulq;
+    .reg .u32 %new_st;
+    cvt.f32.u32 %mulq, %q;      // mulq = float(q)
+    mul.f32 %mulq, %randf, %mulq;
+    cvt.rni.u32.f32 %new_st, %mulq; // округлим до int
+
+    // Если %new_st == %old_state, нет изменений
+    setp.eq.u32 p_same, %new_st, %old_state;
+    @p_same bra DONE;
+
+    //-----------------------------------------------------------------
+    // Считаем dE (упрощённо): сравним 6 соседей
+    // dE = E(new) - E(old).
+    // E(old) = -#(same_with_neighbor_old)
+    // E(new) = -#(same_with_neighbor_new)
+    // => dE = -(count_new) - ( -(count_old) ) = -count_new + count_old
+
+    .reg .s32 %count_old;
+    .reg .s32 %count_new;
+    mov.s32 %count_old, 0;
+    mov.s32 %count_new, 0;
+
+    // Для каждого из 6 соседей
+    // dx = ±1, dy=0, dz=0
+    // dx=0, dy=±1, dz=0
+    // dx=0, dy=0, dz=±1
+    // Проверка границ (x>0, x<nx-1, y>0,... etc.) — упрощённо сделаем if
+
+#define CHECK_NEIGH(dx, dy, dz)                       \
+    { .reg .s32 _nx; mov.s32 _nx, %x; add.s32 _nx, _nx, dx; \
+      .reg .pred _pOut;                                \
+      setp.lt.s32 _pOut, _nx, 0;                       \
+      @ _pOut bra SKIP_##dx##dy##dz;                   \
+      setp.ge.s32 _pOut, _nx, %nx;                     \
+      @ _pOut bra SKIP_##dx##dy##dz;                   \
+      .reg .s32 _ny; mov.s32 _ny, %y; add.s32 _ny, _ny, dy; \
+      setp.lt.s32 _pOut, _ny, 0;                       \
+      @ _pOut bra SKIP_##dx##dy##dz;                   \
+      setp.ge.s32 _pOut, _ny, %ny;                     \
+      @ _pOut bra SKIP_##dx##dy##dz;                   \
+      .reg .s32 _nz; mov.s32 _nz, %z; add.s32 _nz, _nz, dz; \
+      setp.lt.s32 _pOut, _nz, 0;                       \
+      @ _pOut bra SKIP_##dx##dy##dz;                   \
+      setp.ge.s32 _pOut, _nz, %nz;                     \
+      @ _pOut bra SKIP_##dx##dy##dz;                   \
+      // valid neighbor => idx_n = _x + nx*(_y + ny*_z) \
+      .reg .s32 _xy2; mul.lo.s32 _xy2, %ny, _nz;        \
+      add.s32 _xy2, _xy2, _ny;                         \
+      mul.lo.s32 _xy2, _xy2, %nx;                      \
+      add.s32 _xy2, _xy2, _nx;                         \
+      .reg .u64 _addr_n;                               \
+      mul.wide.s32 _addr_n, _xy2, 1;                   \
+      add.u64 _addr_n, _addr_n, %states_ptr_;          \
+      .reg .u8 st_neigh;                               \
+      ld.global.u8 st_neigh, [_addr_n];                \
+      // сравнить с old_state
+      setp.eq.u32 _pOut, st_neigh, %old_state;          \
+      @!_pOut bra DIFF_OLD_##dx##dy##dz;                \
+      add.s32 %count_old, %count_old, 1;               \
+DIFF_OLD_##dx##dy##dz:                                  \
+      // сравнить с new_st
+      setp.eq.u32 _pOut, st_neigh, %new_st;            \
+      @!_pOut bra DIFF_NEW_##dx##dy##dz;               \
+      add.s32 %count_new, %count_new, 1;               \
+DIFF_NEW_##dx##dy##dz: ;                                \
+SKIP_##dx##dy##dz: ;}
+
+    CHECK_NEIGH(1, 0, 0)
+    CHECK_NEIGH(-1, 0, 0)
+    CHECK_NEIGH(0, 1, 0)
+    CHECK_NEIGH(0, -1, 0)
+    CHECK_NEIGH(0, 0, 1)
+    CHECK_NEIGH(0, 0, -1)
+
+#undef CHECK_NEIGH
+
+    // dE = -count_new - ( -(count_old) ) = -count_new + count_old
+    .reg .s32 %dE;
+    sub.s32 %dE, %count_old, %count_new;
+
+    // критерий Метрополиса:
+    // if dE <= 0 => принять
+    // else => принять с вероятностью exp(-dE / T)
+    setp.le.s32 p_accept, %dE, 0;
+    @p_accept bra ACCEPT;
+
+    // иначе генерируем ещё одно случайное число (для check)
+    // reuse %randf? Или возьмём?
+    // Упрощённо берём тот же randf, считаем p = exp(-dE / T), если randf < p => accept
+    .reg .f32 %dEf;
+    cvt.rn.f32.s32 %dEf, %dE;
+    neg.f32 %dEf, %dEf;        // %dEf = -dE
+    div.f32 %dEf, %dEf, %temp; // %dEf = -(dE)/T
+    ex2.approx.f32 %dEf, %dEf; // p = exp(%dEf)
+    setp.lt.f32 p_metrop, %randf, %dEf;
+    @!p_metrop bra DONE;
+
+ACCEPT:
+    // Записываем new_st
+    st.global.u8 [%addr_s], %new_st;
+
+DONE:
+    ret;
+}
