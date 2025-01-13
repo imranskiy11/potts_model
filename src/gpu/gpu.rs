@@ -2,7 +2,6 @@ use cust::memory::{DeviceBuffer, CopyDestination};
 use cust::error::CudaResult;
 use cust::memory::DeviceCopy;
 
-/// Контекст для работы с GPU
 pub struct GpuContext;
 
 impl GpuContext {

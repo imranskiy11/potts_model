@@ -8,5 +8,5 @@ winapi = { version = "0.3", features = ["winuser", "windef"] }
 eframe = { version = "0.24", features = ["glow"] }
 egui = "0.24"
 egui_plot = "0.24"
-cust = "0.3"
+cust = "0.3.2"
 rand = "0.8"

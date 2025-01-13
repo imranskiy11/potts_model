@@ -27,7 +27,7 @@ pub fn run_wang_landau_step_on_gpu(
             let idx = i + nx * (j + ny * k);
             let current_state = states[idx];
             let new_state = (rand::random::<u8>() % q) as u8;
-            let delta_e = 0.0; // Здесь расчет энергии
+            let delta_e = 0.0; 
 
             if rand::random::<f64>() < (f / f).exp() {
                 states[idx] = new_state;
