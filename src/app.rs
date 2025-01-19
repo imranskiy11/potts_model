@@ -1,68 +1,61 @@
 use std::time::Instant;
 use eframe::egui;
-
 use crate::lattice::Lattice;
-// use crate::gpu::monte_carlo::run_monte_carlo_step_on_gpu;
+use std::thread;
 
-/// Режим вычислений
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComputeMode {
     CPU,
     GPU,
 }
 
-/// Экран в UI (два экрана: настройки и визуализация)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Settings,
     Visualization,
 }
 
-/// Главное приложение
 pub struct App {
     pub current_screen: Screen,
 
-    // Параметры решётки
     pub nx: usize,
     pub ny: usize,
     pub nz: usize,
     pub q: u8,
     pub temperature: f64,
 
-    // Собственно решётка (None, пока не создана)
     pub lattice: Option<Lattice>,
 
-    // Управление симуляцией
     pub is_running: bool,
     pub last_update: Instant,
     pub compute_mode: ComputeMode,
     pub steps_per_update: usize,
 
-    // Хранение энергии
     pub energy_history: Vec<(f64, f64)>,
     pub energy_squared_history: Vec<(f64, f64)>,
 
-    // Параметры для алгоритма Ванга-Ландау (по желанию)
+    // Параметры для Wang-Landau (не используем)
     pub omega: Vec<f64>,
     pub histogram: Vec<u64>,
     pub f: f64,
     pub min_energy: f64,
 
-    // Настройки визуализации
     pub slice_z: usize,
     pub update_interval: f64,
     pub wang_landau_active: bool,
     pub characteristic: String,
 
-    // Строка для результатов/сообщений
     pub results: String,
+
+    // Для асинхронного GPU
+    pub gpu_in_progress: bool,
+    pub gpu_join_handle: Option<thread::JoinHandle<Vec<u8>>>,
 }
 
 impl Default for App {
     fn default() -> Self {
         Self {
             current_screen: Screen::Settings,
-
             nx: 50,
             ny: 50,
             nz: 50,
@@ -90,20 +83,62 @@ impl Default for App {
             characteristic: String::new(),
 
             results: String::new(),
+
+            gpu_in_progress: false,
+            gpu_join_handle: None,
         }
     }
 }
 
-/// Имплементация eframe::App
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        match self.current_screen {
-            Screen::Settings => {
-                crate::ui::settings::show_settings_screen(ctx, self);
-            }
-            Screen::Visualization => {
-                crate::ui::visualization::show_visualization_screen(ctx, self);
+        // 1) Проверяем, не завершился ли GPU-поток
+        if let Some(handle) = self.gpu_join_handle.take() {
+            if handle.is_finished() {
+                // join
+                match handle.join() {
+                    Ok(new_states) => {
+                        // 2) Записываем новые states
+                        if let Some(lat) = &mut self.lattice {
+                            lat.states= new_states;
+                            // 3) Считаем энергию, записываем в history
+                            let e= compute_energy(lat);
+                            self.energy_history.push((self.temperature, e));
+                            self.energy_squared_history.push((self.temperature, e.powi(2)));
+                        }
+                        self.results="GPU расчет завершен".to_string();
+                    }
+                    Err(_)=> {
+                        self.results="Ошибка join GPU".to_string();
+                    }
+                }
+                self.gpu_in_progress= false;
+            } else {
+                // поток ещё идёт
+                self.gpu_join_handle= Some(handle);
             }
         }
+
+        // 4) Переключаем UI
+        match self.current_screen {
+            Screen::Settings => crate::ui::settings::show_settings_screen(ctx, self),
+            Screen::Visualization => crate::ui::visualization::show_visualization_screen(ctx, self),
+        }
+
+        // 5) Автоперерисовка
+        ctx.request_repaint();
     }
+}
+
+// Функция подсчёта энергии (для GPU-join)
+fn compute_energy(lat: &mut Lattice)-> f64 {
+    let mut total=0;
+    for i in 0.. lat.states.len() {
+        let z= i/(lat.nx*lat.ny);
+        let rest= i- z*(lat.nx*lat.ny);
+        let y= rest/ lat.nx;
+        let x= rest% lat.nx;
+        total+= lat.calculate_energy(x,y,z);
+    }
+    total as f64/ (lat.nx*lat.ny*lat.nz) as f64
 }

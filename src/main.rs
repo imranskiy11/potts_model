@@ -1,6 +1,3 @@
-use eframe::egui;
-use cust::CudaFlags;
-
 mod app;
 mod lattice;
 mod gpu;
@@ -8,17 +5,19 @@ mod ui;
 mod utils;
 
 use app::App;
+use cust::CudaFlags;
 
 fn main() -> Result<(), eframe::Error> {
-    // Инициализируем CUDA.
-    // Передаём пустой флаг, и при ошибке - panic!
-    cust::init(CudaFlags::empty()).expect("Не удалось инициализировать CUDA!");
+    cust::init(CudaFlags::empty()).expect("Failed to init CUDA!");
 
-    let options = eframe::NativeOptions::default();
+    let opts= eframe::NativeOptions::default();
 
     eframe::run_native(
-        "Модель Поттса (GPU/CPU)",
-        options,
-        Box::new(|_| Box::new(App::default())),
+        "Potts Model (Big GPU, old UI)",
+        opts,
+        Box::new(|cc| {
+            cc.egui_ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            Box::new(App::default())
+        })
     )
 }

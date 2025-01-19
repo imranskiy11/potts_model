@@ -1,30 +1,28 @@
 use crate::lattice::Lattice;
 
 impl Lattice {
-    pub fn calculate_energy(&self, x: usize, y: usize, z: usize) -> i32 {
-        let mut energy = 0;
-        let current_state = self.get_state(x, y, z);
-
-        let neighbors = [
-            (-1, 0, 0), (1, 0, 0), // Соседи по X
-            (0, -1, 0), (0, 1, 0), // Соседи по Y
-            (0, 0, -1), (0, 0, 1), // Соседи по Z
+    pub fn calculate_energy(&self, x:usize, y:usize,z:usize)-> i32 {
+        let st= self.get_state(x,y,z);
+        let neigh= [
+            (1,0,0),(-1,0,0),
+            (0,1,0),(0,-1,0),
+            (0,0,1),(0,0,-1),
         ];
-
-        for (dx, dy, dz) in neighbors.iter() {
-            let nx = (x as isize + dx) as usize;
-            let ny = (y as isize + dy) as usize;
-            let nz = (z as isize + dz) as usize;
-
-            if nx < self.nx && ny < self.ny && nz < self.nz {
-                let neighbor_state = self.get_state(nx, ny, nz);
-                if current_state == neighbor_state {
-                    energy -= 1; // Совпадение снижает энергию
-                } else {
-                    energy += 1; // Несовпадение повышает энергию
-                }
+        let mut e=0;
+        for &(dx,dy,dz) in &neigh {
+            let xx= x as isize+ dx;
+            let yy= y as isize+ dy;
+            let zz= z as isize+ dz;
+            if xx>=0 && xx<(self.nx as isize) &&
+               yy>=0 && yy<(self.ny as isize) &&
+               zz>=0 && zz<(self.nz as isize) {
+                let idx_n= (zz as usize)*(self.nx*self.ny)
+                          + (yy as usize)* self.nx
+                          + (xx as usize);
+                let stn= self.states[idx_n];
+                if stn== st { e-=1; } else { e+=1;}
             }
         }
-        energy
+        e
     }
 }
