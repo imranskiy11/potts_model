@@ -7,5 +7,5 @@ pub fn run_wang_landau_step_on_gpu(
     _f: f64,
     _min_energy: i32,
 ){
-    // заглушка
+    // 
 }

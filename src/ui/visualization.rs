@@ -106,14 +106,14 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
             });
         });
 
-        // Основная логика
+
         if let Some(lat)= &mut app.lattice {
             if app.is_running &&
                app.last_update.elapsed() >= Duration::from_millis(app.update_interval as u64)
             {
                 match app.compute_mode {
                     ComputeMode::CPU => {
-                        // steps_per_update проходов
+                        // steps_per_update 
                         for _ in 0.. app.steps_per_update {
                             lat.monte_carlo_step(app.temperature);
                         }
@@ -148,7 +148,7 @@ pub fn show_visualization_screen(ctx: &egui::Context, app: &mut App) {
                 }
             }
 
-            // Рисуем slice Z
+            //  slice Z
             let z_s= app.slice_z.min(lat.nz.saturating_sub(1));
             let slice= lat.get_slice(z_s);
             for row in slice {

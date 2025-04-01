@@ -23,7 +23,7 @@ pub fn run_monte_carlo_step_on_gpu(
     let total_size = states.len();
     let d_states = DeviceBuffer::from_slice(states)?;
 
-    // numThreads ~ min(1e6, total_size), но не > 65535*1024
+    // numThreads ~ min(1e6, total_size)
     let threads_per_block=1024u32;
     let desired = 2_000_000.min(total_size);
     let max_threads= (65535u64*1024u64) as usize;
@@ -34,7 +34,7 @@ pub fn run_monte_carlo_step_on_gpu(
     let rand_ids_len= n_sweeps* num_threads;
     let randoms_len= rand_ids_len*2;
 
-    // Генерируем rand_ids, randoms
+    // rand_ids, randoms
     let mut rng= rand::thread_rng();
     let mut rand_ids_host= Vec::with_capacity(rand_ids_len);
     for _ in 0.. rand_ids_len {
@@ -69,8 +69,7 @@ pub fn run_monte_carlo_step_on_gpu(
         )?;
     }
     stream.synchronize()?;
-
-    // копируем назад
+    
     d_states.copy_to(states)?;
 
     Ok(())

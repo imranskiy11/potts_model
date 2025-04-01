@@ -34,7 +34,6 @@ pub struct App {
     pub energy_history: Vec<(f64, f64)>,
     pub energy_squared_history: Vec<(f64, f64)>,
 
-    // Параметры для Wang-Landau (не используем)
     pub omega: Vec<f64>,
     pub histogram: Vec<u64>,
     pub f: f64,
@@ -47,7 +46,6 @@ pub struct App {
 
     pub results: String,
 
-    // Для асинхронного GPU
     pub gpu_in_progress: bool,
     pub gpu_join_handle: Option<thread::JoinHandle<Vec<u8>>>,
 }
@@ -92,16 +90,13 @@ impl Default for App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 1) Проверяем, не завершился ли GPU-поток
         if let Some(handle) = self.gpu_join_handle.take() {
             if handle.is_finished() {
                 // join
                 match handle.join() {
                     Ok(new_states) => {
-                        // 2) Записываем новые states
                         if let Some(lat) = &mut self.lattice {
                             lat.states= new_states;
-                            // 3) Считаем энергию, записываем в history
                             let e= compute_energy(lat);
                             self.energy_history.push((self.temperature, e));
                             self.energy_squared_history.push((self.temperature, e.powi(2)));
@@ -114,23 +109,18 @@ impl eframe::App for App {
                 }
                 self.gpu_in_progress= false;
             } else {
-                // поток ещё идёт
                 self.gpu_join_handle= Some(handle);
             }
         }
 
-        // 4) Переключаем UI
         match self.current_screen {
             Screen::Settings => crate::ui::settings::show_settings_screen(ctx, self),
             Screen::Visualization => crate::ui::visualization::show_visualization_screen(ctx, self),
         }
-
-        // 5) Автоперерисовка
         ctx.request_repaint();
     }
 }
 
-// Функция подсчёта энергии (для GPU-join)
 fn compute_energy(lat: &mut Lattice)-> f64 {
     let mut total=0;
     for i in 0.. lat.states.len() {
