@@ -1,23 +1,28 @@
+mod axis; 
+mod monitor; 
 mod app;
+mod viz; 
+mod stats;
 mod lattice;
+mod ui_helpers;
+mod wang_landau;
+
+#[cfg(feature = "cuda")]
 mod gpu;
-mod ui;
+#[cfg(not(feature = "cuda"))]
+mod gpu;
 mod utils;
 
-use app::App;
+#[cfg(feature = "cuda")]
 use cust::CudaFlags;
 
 fn main() -> Result<(), eframe::Error> {
-    cust::init(CudaFlags::empty()).expect("Failed to init CUDA!");
-
-    let opts= eframe::NativeOptions::default();
+    #[cfg(feature = "cuda")]
+    cust::init(CudaFlags::empty()).expect("CUDA init");
 
     eframe::run_native(
-        "Potts Model (Big GPU, old UI)",
-        opts,
-        Box::new(|cc| {
-            cc.egui_ctx.request_repaint_after(std::time::Duration::from_millis(30));
-            Box::new(App::default())
-        })
+        "Potts Model",
+        Default::default(),
+        Box::new(|cc| Box::new(app::App::default_with_repaint(cc))),
     )
 }
